@@ -1,0 +1,27 @@
+
+services:
+  db:
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_USER: aszn
+      POSTGRES_PASSWORD: senha123
+      POSTGRES_DB: aszn_db
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  web:
+    build: .
+    restart: on-failure
+    environment:
+      DATABASE_URL: postgresql://aszn:senha123@db:5432/aszn_db
+      JWT_SECRET_KEY: "troque_em_producao_mais_seguro"
+    ports:
+      - "5000:5000"
+    depends_on:
+      - db
+
+volumes:
+  pgdata:
