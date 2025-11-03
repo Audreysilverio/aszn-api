@@ -54,6 +54,7 @@ class Doacao(db.Model):
     valor = db.Column(db.Float, nullable=True)
     descricao = db.Column(db.Text, nullable=True)
     imagem_url = db.Column(db.Text, nullable=True)
+    telefone = db.Column(db.String(50))
     status = db.Column(db.String(50), nullable=False, default="pendente")
     criado_em = db.Column(db.DateTime, server_default=db.func.now())
 
@@ -136,6 +137,7 @@ def criar_doacao():
     valor = d.get("valor")
     descricao = (d.get("descricao") or "").strip()
     imagem_url = (d.get("imagem_url") or "").strip()
+    telefone = (d.get("telefone") or "").strip() 
     erros = []
     if not doador_nome:
         erros.append("doador_nome obrigatório")
@@ -158,6 +160,7 @@ def criar_doacao():
         valor=valor,
         descricao=descricao,
         imagem_url=imagem_url,
+        telefone=telefone,
     )
     db.session.add(dd)
     db.session.commit()
@@ -250,7 +253,28 @@ def admin_delete_vol(id):
 
 
 # ---------- Run ----------
+# ---------- Run ----------
+from sqlalchemy import inspect, text
+
 if __name__ == "__main__":
-    with app.app_context():
-        db.create_all()
+    try:
+        with app.app_context():
+            db.create_all()
+            # 🔄 adicionar coluna telefone na tabela doacoes se não existir
+            insp = inspect(db.engine)
+            colnames = [c["name"] for c in insp.get_columns("doacoes")]
+            if "telefone" not in colnames:
+                dialect = db.engine.url.get_dialect().name  # "postgresql", "sqlite", etc.
+                if dialect == "postgresql":
+                    db.session.execute(text('ALTER TABLE doacoes ADD COLUMN telefone VARCHAR(50);'))
+                else:
+                    # SQLite aceita ADD COLUMN simples
+                    db.session.execute(text('ALTER TABLE doacoes ADD COLUMN telefone TEXT;'))
+                db.session.commit()
+                print("✅ Coluna 'telefone' adicionada em 'doacoes'.")
+            print("✅ Banco de dados sincronizado com sucesso.")
+    except Exception as e:
+        print("⚠️ Erro ao criar/atualizar tabelas:", e)
+
+    # ⬇️ mantém essa linha original do seu app
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
