@@ -15,11 +15,12 @@ load_dotenv()
 
 # ---------- Config ----------
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # em produção, restrinja origins se quiser
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///database.db")
 app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
 app.config["JWT_SECRET_KEY"] = os.environ.get("JWT_SECRET_KEY", "troque_essa_chave_em_producao")
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=8)
 
@@ -53,7 +54,7 @@ class Doacao(db.Model):
     telefone = db.Column(db.String(50))
     status = db.Column(db.String(50), nullable=False, default="pendente")
     criado_em = db.Column(db.DateTime, server_default=db.func.now())
-    deleted = db.Column(db.Boolean, default=False)
+    deleted = db.Column(db.Boolean, default=False)  # soft delete
 
 
 class Voluntario(db.Model):
@@ -67,7 +68,25 @@ class Voluntario(db.Model):
     observacoes = db.Column(db.Text)
     status = db.Column(db.String(50), nullable=False, default="pendente")
     criado_em = db.Column(db.DateTime, server_default=db.func.now())
-    deleted = db.Column(db.Boolean, default=False)
+    deleted = db.Column(db.Boolean, default=False)  # soft delete
+
+
+# ---------- Sync de tabelas ao importar (necessário no Render) ----------
+from sqlalchemy import inspect, text
+try:
+    with app.app_context():
+        db.create_all()  # cria users, doacoes, voluntarios se não existirem
+
+        # Garante a coluna 'telefone' em doacoes (idempotente)
+        insp = inspect(db.engine)
+        doacoes_cols = [c["name"] for c in insp.get_columns("doacoes")]
+        if "telefone" not in doacoes_cols:
+            db.session.execute(text('ALTER TABLE doacoes ADD COLUMN telefone TEXT;'))
+            db.session.commit()
+
+        print("✅ Tabelas sincronizadas na importação")
+except Exception as e:
+    print("⚠️ Erro ao sincronizar tabelas:", e)
 
 
 # ---------- Helpers ----------
@@ -75,7 +94,15 @@ def to_dict(model):
     out = {}
     for c in model.__table__.columns:
         val = getattr(model, c.name)
-        out[c.name] = str(val) if isinstance(val, (db.DateTime,)) and val is not None else val
+        # conversão simples para string quando for DateTime
+        try:
+            from sqlalchemy.sql.sqltypes import DateTime as _DT
+            if isinstance(c.type, _DT) and val is not None:
+                out[c.name] = str(val)
+            else:
+                out[c.name] = val
+        except Exception:
+            out[c.name] = val
     return out
 
 
@@ -130,7 +157,6 @@ def register_admin():
     return jsonify({"ok": True, "admin": {"nome": u.nome, "email": u.email}}), 201
 
 
-# ✅ Reinserido aqui
 @app.route("/auth/login", methods=["POST"])
 def login():
     data = request.get_json(silent=True) or request.form.to_dict() or {}
@@ -287,19 +313,6 @@ def admin_restore_voluntario(id):
     return jsonify({"ok": True, "mensagem": "restaurado"})
 
 
-# ---------- Run ----------
-from sqlalchemy import inspect, text
-
+# ---------- Run (apenas para ambiente local) ----------
 if __name__ == "__main__":
-    try:
-        with app.app_context():
-            db.create_all()
-            insp = inspect(db.engine)
-            colnames = [c["name"] for c in insp.get_columns("doacoes")]
-            if "telefone" not in colnames:
-                db.session.execute(text('ALTER TABLE doacoes ADD COLUMN telefone TEXT;'))
-                db.session.commit()
-    except Exception as e:
-        print("⚠️ Erro ao criar/atualizar tabelas:", e)
-
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
