@@ -7,26 +7,25 @@ from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_jwt_extended import (
     JWTManager, create_access_token,
-    jwt_required, get_jwt_identity
+    jwt_required
 )
 from dotenv import load_dotenv
-from sqlalchemy import inspect, text
 
 load_dotenv()
 
-# ---------- App & Config ----------
+# ---------- Config ----------
 app = Flask(__name__)
-CORS(app)  # em produção, restrinja origins se quiser
+CORS(app)
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///database.db")
 app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-
 app.config["JWT_SECRET_KEY"] = os.environ.get("JWT_SECRET_KEY", "troque_essa_chave_em_producao")
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=8)
 
 db = SQLAlchemy(app)
 jwt = JWTManager(app)
+
 
 # ---------- Models ----------
 class User(db.Model):
@@ -55,7 +54,7 @@ class Doacao(db.Model):
     telefone = db.Column(db.String(50))
     status = db.Column(db.String(50), nullable=False, default="pendente")
     criado_em = db.Column(db.DateTime, server_default=db.func.now())
-    deleted = db.Column(db.Boolean, default=False)  # soft delete
+    deleted = db.Column(db.Boolean, default=False)
 
 
 class Voluntario(db.Model):
@@ -69,20 +68,55 @@ class Voluntario(db.Model):
     observacoes = db.Column(db.Text)
     status = db.Column(db.String(50), nullable=False, default="pendente")
     criado_em = db.Column(db.DateTime, server_default=db.func.now())
-    deleted = db.Column(db.Boolean, default=False)  # soft delete
+    deleted = db.Column(db.Boolean, default=False)
 
 
 # ---------- Helpers ----------
+from datetime import datetime
+from sqlalchemy import text, inspect
+
 def to_dict(model):
     out = {}
     for c in model.__table__.columns:
         val = getattr(model, c.name)
-        out[c.name] = str(val) if isinstance(val, (db.DateTime,)) and val is not None else val
+        # Serializa datetime de forma segura
+        if isinstance(val, datetime):
+            out[c.name] = val.isoformat()
+        else:
+            out[c.name] = val
     return out
-
 
 def validar_email(email: str) -> bool:
     return isinstance(email, str) and "@" in email and "." in email
+
+def is_sqlite_uri(uri: str) -> bool:
+    return uri.startswith("sqlite:")
+
+def bootstrap_database():
+    """Cria tabelas e garante coluna telefone em doacoes."""
+    with app.app_context():
+        db.create_all()
+        eng = db.engine
+        insp = inspect(eng)
+
+        # Garante coluna telefone em doacoes
+        try:
+            cols = [c["name"] for c in insp.get_columns("doacoes")]
+        except Exception:
+            cols = []
+        if "telefone" not in cols:
+            try:
+                if is_sqlite_uri(DATABASE_URL):
+                    eng.execute(text("ALTER TABLE doacoes ADD COLUMN telefone TEXT"))
+                else:
+                    eng.execute(text("ALTER TABLE doacoes ADD COLUMN IF NOT EXISTS telefone VARCHAR(50)"))
+            except Exception:
+                # se falhar por já existir ou outra condição, segue a vida
+                pass
+
+
+# Chama bootstrap no import (garante em Render e local)
+bootstrap_database()
 
 
 # ---------- AUTH ----------
@@ -105,10 +139,6 @@ def register():
 
 @app.route("/auth/register-admin", methods=["POST"])
 def register_admin():
-    """
-    Setup do primeiro usuário (admin) protegido por token de instalação.
-    Defina ADMIN_SETUP_TOKEN nas variáveis de ambiente do Render.
-    """
     data = request.get_json(silent=True) or request.form.to_dict() or {}
     token_env = os.environ.get("ADMIN_SETUP_TOKEN")
     token_req = (data.get("token") or "").strip()
@@ -160,7 +190,45 @@ def login():
 def home():
     return jsonify({"ok": True, "mensagem": "API ASZN Digital - Doações & Voluntariado"})
 
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"ok": True, "status": "up"})
 
+@app.route("/health/db", methods=["GET"])
+def health_db():
+    try:
+        eng = db.engine
+        insp = inspect(eng)
+
+        def cols_safe(tbl):
+            try:
+                return [c["name"] for c in insp.get_columns(tbl)]
+            except Exception:
+                return []
+
+        try:
+            v_count = db.session.query(Voluntario).count()
+        except Exception:
+            v_count = -1
+        try:
+            d_count = db.session.query(Doacao).count()
+        except Exception:
+            d_count = -1
+
+        return jsonify({
+            "ok": True,
+            "engine": str(eng.url),
+            "tables": insp.get_table_names(),
+            "voluntarios_count": v_count,
+            "doacoes_count": d_count,
+            "voluntarios_cols": cols_safe("voluntarios"),
+            "doacoes_cols": cols_safe("doacoes"),
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "erro": str(e)}), 500
+
+
+# ---------- Público: criação ----------
 @app.route("/doacoes", methods=["POST"])
 def criar_doacao():
     d = request.get_json() or {}
@@ -292,48 +360,7 @@ def admin_restore_voluntario(id):
     return jsonify({"ok": True, "mensagem": "restaurado"})
 
 
-# ---------- HEALTH (apenas UMA vez) ----------
-@app.route("/health", methods=["GET"])
-def health():
-    return jsonify({"ok": True, "status": "healthy"}), 200
-
-
-@app.route("/health/db", methods=["GET"])
-def health_db():
-    try:
-        vc = Voluntario.query.count()
-        dc = Doacao.query.count()
-        insp = inspect(db.engine)
-        cols_vol = [c["name"] for c in insp.get_columns("voluntarios")]
-        cols_doa = [c["name"] for c in insp.get_columns("doacoes")]
-        return jsonify({
-            "ok": True,
-            "voluntarios_count": vc,
-            "doacoes_count": dc,
-            "voluntarios_cols": cols_vol,
-            "doacoes_cols": cols_doa
-        }), 200
-    except Exception as e:
-        return jsonify({"ok": False, "where": "health_db", "error": str(e)}), 500
-
-
-# ---------- Boot ----------
-def _ensure_tables():
-    """Cria tabelas e garante coluna telefone em doacoes (idempotente)."""
-    with app.app_context():
-        db.create_all()
-        try:
-            insp = inspect(db.engine)
-            colnames = [c["name"] for c in insp.get_columns("doacoes")]
-            if "telefone" not in colnames:
-                db.session.execute(text('ALTER TABLE doacoes ADD COLUMN telefone TEXT;'))
-                db.session.commit()
-        except Exception as e:
-            # Em certos bancos (ex.: PostgreSQL no Render) essa checagem pode diferir;
-            # se der erro de alteração, apenas loga e segue.
-            print("ℹ️ Aviso ao checar/alterar coluna telefone:", e)
-
-
+# ---------- Run ----------
 if __name__ == "__main__":
-    _ensure_tables()
+    # Em dev local, só roda o servidor. No Render já está OK.
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
