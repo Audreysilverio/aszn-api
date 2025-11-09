@@ -83,11 +83,6 @@ def validar_email(email: str) -> bool:
     return isinstance(email, str) and "@" in email and "." in email
 
 
-# ---------- HEALTH ----------
-@app.route("/health", methods=["GET"])
-def health():
-    return jsonify({"ok": True, "status": "healthy"}), 200
-
 
 # ---------- AUTH ----------
 @app.route("/auth/register-admin", methods=["POST"])
@@ -198,7 +193,6 @@ def criar_doacao():
     return jsonify({"ok": True, "doacao": to_dict(dd)}), 201
 
 # ---------- HEALTH & DEBUG ----------
-from datetime import datetime
 from sqlalchemy import inspect
 
 @app.route("/health", methods=["GET"])
@@ -208,15 +202,11 @@ def health():
 @app.route("/health/db", methods=["GET"])
 def health_db():
     try:
-        # tenta contar registros (pode falhar se a tabela não existir)
         vc = Voluntario.query.count()
         dc = Doacao.query.count()
-
-        # mostra colunas atuais das tabelas
         insp = inspect(db.engine)
         cols_vol = [c["name"] for c in insp.get_columns("voluntarios")]
         cols_doa = [c["name"] for c in insp.get_columns("doacoes")]
-
         return jsonify({
             "ok": True,
             "voluntarios_count": vc,
@@ -225,7 +215,6 @@ def health_db():
             "doacoes_cols": cols_doa
         }), 200
     except Exception as e:
-        # devolve o motivo do 500
         return jsonify({"ok": False, "where": "health_db", "error": str(e)}), 500
 
 # ---------- ADMIN ----------
