@@ -1,6 +1,6 @@
 # app.py
 import os
-from datetime import timedelta
+from datetime import timedelta, datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
@@ -10,7 +10,9 @@ from flask_jwt_extended import (
     jwt_required
 )
 from dotenv import load_dotenv
+from sqlalchemy import text, inspect
 
+# Carrega variáveis de ambiente (localmente)
 load_dotenv()
 
 # ---------- Config ----------
@@ -22,6 +24,17 @@ app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["JWT_SECRET_KEY"] = os.environ.get("JWT_SECRET_KEY", "troque_essa_chave_em_producao")
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=8)
+
+# 🚀 CORREÇÃO CRÍTICA PARA RENDER/POSTGRESQL:
+# Adiciona o parâmetro SSL/TLS para o SQLAlchemy
+if DATABASE_URL.startswith("postgresql://"):
+    # O 'sslmode=require' é obrigatório na maioria dos provedores de nuvem
+    # para garantir a segurança da conexão.
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+        "connect_args": {
+            "sslmode": "require"
+        }
+    }
 
 db = SQLAlchemy(app)
 jwt = JWTManager(app)
@@ -72,9 +85,6 @@ class Voluntario(db.Model):
 
 
 # ---------- Helpers ----------
-from datetime import datetime
-from sqlalchemy import text, inspect
-
 def to_dict(model):
     out = {}
     for c in model.__table__.columns:
@@ -196,6 +206,7 @@ def health():
 
 @app.route("/health/db", methods=["GET"])
 def health_db():
+    # Rota de health check para o banco de dados
     try:
         eng = db.engine
         insp = inspect(eng)
@@ -225,7 +236,8 @@ def health_db():
             "doacoes_cols": cols_safe("doacoes"),
         })
     except Exception as e:
-        return jsonify({"ok": False, "erro": str(e)}), 500
+        # Se falhar aqui, o erro 500 está relacionado a esta exceção
+        return jsonify({"ok": False, "erro": str(e), "mensagem": "Falha ao conectar ou consultar o banco."}), 500
 
 
 # ---------- Público: criação ----------
@@ -362,5 +374,4 @@ def admin_restore_voluntario(id):
 
 # ---------- Run ----------
 if __name__ == "__main__":
-    # Em dev local, só roda o servidor. No Render já está OK.
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
