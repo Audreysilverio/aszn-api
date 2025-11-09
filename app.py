@@ -197,6 +197,36 @@ def criar_doacao():
     db.session.commit()
     return jsonify({"ok": True, "doacao": to_dict(dd)}), 201
 
+# ---------- HEALTH & DEBUG ----------
+from datetime import datetime
+from sqlalchemy import inspect
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"ok": True, "status": "healthy"}), 200
+
+@app.route("/health/db", methods=["GET"])
+def health_db():
+    try:
+        # tenta contar registros (pode falhar se a tabela não existir)
+        vc = Voluntario.query.count()
+        dc = Doacao.query.count()
+
+        # mostra colunas atuais das tabelas
+        insp = inspect(db.engine)
+        cols_vol = [c["name"] for c in insp.get_columns("voluntarios")]
+        cols_doa = [c["name"] for c in insp.get_columns("doacoes")]
+
+        return jsonify({
+            "ok": True,
+            "voluntarios_count": vc,
+            "doacoes_count": dc,
+            "voluntarios_cols": cols_vol,
+            "doacoes_cols": cols_doa
+        }), 200
+    except Exception as e:
+        # devolve o motivo do 500
+        return jsonify({"ok": False, "where": "health_db", "error": str(e)}), 500
 
 # ---------- ADMIN ----------
 @app.route("/admin/voluntarios", methods=["GET"])
