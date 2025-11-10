@@ -25,8 +25,7 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["JWT_SECRET_KEY"] = os.environ.get("JWT_SECRET_KEY", "troque_essa_chave_em_producao")
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=8)
 
-# 🚀 CORREÇÃO CRÍTICA PARA RENDER/POSTGRESQL:
-# Adiciona o parâmetro SSL/TLS para o SQLAlchemy
+# 🚀 CORREÇÃO 1: Adiciona o parâmetro SSL/TLS para o PostgreSQL no Render
 if DATABASE_URL.startswith("postgresql://"):
     # O 'sslmode=require' é obrigatório na maioria dos provedores de nuvem
     # para garantir a segurança da conexão.
@@ -102,28 +101,49 @@ def validar_email(email: str) -> bool:
 def is_sqlite_uri(uri: str) -> bool:
     return uri.startswith("sqlite:")
 
+# 🚀 CORREÇÃO 2: Refatoração do bootstrap_database para garantir colunas ausentes
 def bootstrap_database():
-    """Cria tabelas e garante coluna telefone em doacoes."""
+    """Cria tabelas e garante colunas necessárias."""
     with app.app_context():
         db.create_all()
         eng = db.engine
         insp = inspect(eng)
-
-        # Garante coluna telefone em doacoes
-        try:
-            cols = [c["name"] for c in insp.get_columns("doacoes")]
-        except Exception:
-            cols = []
-        if "telefone" not in cols:
+        
+        # Função interna para adicionar uma coluna, se ausente
+        def add_column_if_missing(table_name, column_name, column_type):
             try:
-                if is_sqlite_uri(DATABASE_URL):
-                    eng.execute(text("ALTER TABLE doacoes ADD COLUMN telefone TEXT"))
-                else:
-                    eng.execute(text("ALTER TABLE doacoes ADD COLUMN IF NOT EXISTS telefone VARCHAR(50)"))
+                # Obter colunas existentes na tabela
+                cols = [c["name"] for c in insp.get_columns(table_name)]
             except Exception:
-                # se falhar por já existir ou outra condição, segue a vida
-                pass
+                # Tabela não existe, ignora, pois db.create_all() cuidou.
+                return 
 
+            if column_name not in cols:
+                print(f"Adicionando coluna {column_name} à tabela {table_name}")
+                try:
+                    # Lógica para adicionar coluna usando ALTER TABLE
+                    if is_sqlite_uri(DATABASE_URL):
+                        # SQLite (local)
+                        sql_type = "TEXT" if column_type.startswith("VARCHAR") else "BOOLEAN"
+                        eng.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {sql_type}"))
+                    else:
+                        # PostgreSQL (Render)
+                        eng.execute(text(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {column_name} {column_type}"))
+                except Exception as e:
+                    # Se falhar (ex: a coluna já foi adicionada por outro processo), apenas continua
+                    print(f"Alerta: Falha ao adicionar coluna {column_name} em {table_name}. Causa: {e}")
+
+        # 1. Tabela Doacoes
+        # Garante 'telefone' (que estava na lógica anterior)
+        add_column_if_missing("doacoes", "telefone", "VARCHAR(50)")
+        # Garante 'deleted' (necessário no modelo Doacao)
+        add_column_if_missing("doacoes", "deleted", "BOOLEAN DEFAULT FALSE")
+
+        # 2. Tabela Voluntarios (SOLUÇÃO DIRETA PARA O ERRO UndefinedColumn)
+        # Garante 'deleted' (necessário no modelo Voluntario)
+        add_column_if_missing("voluntarios", "deleted", "BOOLEAN DEFAULT FALSE")
+        
+        # Você pode adicionar mais verificações aqui se necessário para outras colunas/tabelas
 
 # Chama bootstrap no import (garante em Render e local)
 bootstrap_database()
